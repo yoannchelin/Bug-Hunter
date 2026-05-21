@@ -114,33 +114,47 @@ func cmdScan(args []string) error {
 
 	// AST analysis if repo path given and not disabled.
 	if *repoPath != "" && !*noAST {
-		fmt.Fprintf(os.Stderr, "[hunter] analysing Go AST in %s…\n", *repoPath)
-		silentErrs, err := codeanalysis.AnalyzeRepo(*repoPath)
+		repoAbs, _ := filepath.Abs(*repoPath)
+
+		// Load full path→fileID from the DB (covers files with no commits too).
+		allFilePaths, err := s.LoadAllFilePaths()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[hunter] AST warning: %v\n", err)
-		} else {
-			// Load full path→fileID from the DB (covers files with no commits too).
-			allFilePaths, err := s.LoadAllFilePaths()
-			if err != nil {
-				return fmt.Errorf("load file paths: %w", err)
-			}
-			for rel, id := range pathToID {
-				allFilePaths[rel] = id
-			}
-			// Normalize silent error paths to relative before mapping.
-			repoAbs, _ := filepath.Abs(*repoPath)
-			for i := range silentErrs {
-				if rel, err2 := filepath.Rel(repoAbs, silentErrs[i].Path); err2 == nil {
-					silentErrs[i].Path = rel
+			return fmt.Errorf("load file paths: %w", err)
+		}
+		for rel, id := range pathToID {
+			allFilePaths[rel] = id
+		}
+
+		insertSilentErrs := func(label string, errs []codeanalysis.SilentError) error {
+			for i := range errs {
+				if rel, err2 := filepath.Rel(repoAbs, errs[i].Path); err2 == nil {
+					errs[i].Path = rel
 				}
 			}
-			fds := codeanalysis.ToFindings(silentErrs, allFilePaths, blast)
-			fmt.Fprintf(os.Stderr, "[hunter] %d silent error findings\n", len(fds))
+			fds := codeanalysis.ToFindings(errs, allFilePaths, blast)
+			fmt.Fprintf(os.Stderr, "[hunter] %d %s findings\n", len(fds), label)
 			for _, fd := range fds {
 				if _, err := s.InsertFinding(fd); err != nil {
-					return fmt.Errorf("insert silent error finding: %w", err)
+					return fmt.Errorf("insert %s finding: %w", label, err)
 				}
 			}
+			return nil
+		}
+
+		fmt.Fprintf(os.Stderr, "[hunter] analysing Go AST in %s…\n", *repoPath)
+		goErrs, err := codeanalysis.AnalyzeRepo(*repoPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[hunter] Go AST warning: %v\n", err)
+		} else if err := insertSilentErrs("Go silent error", goErrs); err != nil {
+			return err
+		}
+
+		fmt.Fprintf(os.Stderr, "[hunter] analysing TypeScript/JS in %s…\n", *repoPath)
+		tsErrs, err := codeanalysis.AnalyzeTSRepo(*repoPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[hunter] TS warning: %v\n", err)
+		} else if err := insertSilentErrs("TS silent error", tsErrs); err != nil {
+			return err
 		}
 	}
 
