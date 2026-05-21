@@ -149,6 +149,25 @@ func (srv *Server) toolBugRiskForChange(args map[string]json.RawMessage) (string
 		_ = json.Unmarshal(raw, &files)
 	}
 
+	// If a unified diff is provided instead of (or in addition to) files, extract paths from it.
+	if raw, ok := args["diff"]; ok {
+		var diff string
+		if err := json.Unmarshal(raw, &diff); err == nil && diff != "" {
+			files = append(files, pathsFromDiff(diff)...)
+		}
+	}
+
+	// Deduplicate paths.
+	seen := make(map[string]bool)
+	unique := files[:0]
+	for _, p := range files {
+		if !seen[p] {
+			seen[p] = true
+			unique = append(unique, p)
+		}
+	}
+	files = unique
+
 	// Resolve paths to file IDs.
 	var fileIDs []int64
 	for _, p := range files {
@@ -229,16 +248,20 @@ func toolList() []map[string]any {
 		},
 		{
 			"name":        "bug_risk_for_change",
-			"description": "Given a list of files, returns historical bug signals suggesting risk",
+			"description": "Given a list of files or a unified diff, returns historical bug signals suggesting risk",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"files": map[string]any{
-						"type":  "array",
-						"items": map[string]any{"type": "string"},
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "List of file paths relative to repo root",
+					},
+					"diff": map[string]any{
+						"type":        "string",
+						"description": "Unified diff (git diff output) — paths extracted automatically",
 					},
 				},
-				"required": []string{"files"},
 			},
 		},
 	}

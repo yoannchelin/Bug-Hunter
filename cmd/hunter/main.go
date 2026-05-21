@@ -221,6 +221,8 @@ func cmdFindings(args []string) error {
 	fs := flag.NewFlagSet("findings", flag.ExitOnError)
 	dbPath := fs.String("db", "", "Path to SQLite DB (required)")
 	sev := fs.String("severity", "", "Filter by severity: high|medium|low")
+	kind := fs.String("kind", "", "Filter by kind: fix_hotspot|silent_error|bus_factor_1|implicit_coupling")
+	top := fs.Int("top", 0, "Limit number of results (0 = all)")
 	_ = fs.Parse(args)
 
 	if *dbPath == "" {
@@ -233,12 +235,18 @@ func cmdFindings(args []string) error {
 	}
 	defer s.Close()
 
+	limitN := -1 // SQLite: LIMIT -1 means no limit
+	if *top > 0 {
+		limitN = *top
+	}
 	rows, err := s.DB().Query(`
 SELECT kind,severity,path,line,message,blast_risk FROM hunter_findings
 WHERE (? = '' OR severity = ?)
+  AND (? = '' OR kind = ?)
 ORDER BY
   CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-  blast_risk DESC`, *sev, *sev)
+  blast_risk DESC
+LIMIT ?`, *sev, *sev, *kind, *kind, limitN)
 	if err != nil {
 		return err
 	}
