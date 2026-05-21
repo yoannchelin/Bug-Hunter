@@ -88,6 +88,8 @@ func (srv *Server) callTool(name string, args map[string]json.RawMessage) (strin
 		return srv.toolImplicitCouplings(args)
 	case "bug_risk_for_change":
 		return srv.toolBugRiskForChange(args)
+	case "code_health_summary":
+		return srv.toolCodeHealthSummary(args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -190,30 +192,146 @@ func (srv *Server) toolBugRiskForChange(args map[string]json.RawMessage) (string
 	return renderFindings("Bug Risk for Change", findings), nil
 }
 
+// ---- tool: code_health_summary ----
+
+func (srv *Server) toolCodeHealthSummary(_ map[string]json.RawMessage) (string, error) {
+	lastScan, _ := srv.store.GetMeta("last_scan")
+
+	// Counts by severity.
+	type sevRow struct{ sev string; count int }
+	var sevRows []sevRow
+	rows, err := srv.store.DB().Query(`
+SELECT severity, COUNT(*) FROM hunter_findings GROUP BY severity
+ORDER BY CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END`)
+	if err != nil {
+		return "", err
+	}
+	for rows.Next() {
+		var r sevRow
+		rows.Scan(&r.sev, &r.count)
+		sevRows = append(sevRows, r)
+	}
+	rows.Close()
+
+	// Counts by kind.
+	type kindRow struct{ kind string; count int }
+	var kindRows []kindRow
+	rows, err = srv.store.DB().Query(`
+SELECT kind, COUNT(*) FROM hunter_findings GROUP BY kind ORDER BY COUNT(*) DESC`)
+	if err != nil {
+		return "", err
+	}
+	for rows.Next() {
+		var r kindRow
+		rows.Scan(&r.kind, &r.count)
+		kindRows = append(kindRows, r)
+	}
+	rows.Close()
+
+	// Top 5 hotspot files.
+	hotspots, err := srv.store.QueryHotspots(5, 0.4)
+	if err != nil {
+		return "", err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## Code Health Summary\n\n")
+	if lastScan != "" {
+		fmt.Fprintf(&sb, "Last scan: %s\n\n", lastScan)
+	}
+
+	sb.WriteString("### Findings by severity\n\n")
+	total := 0
+	for _, r := range sevRows {
+		fmt.Fprintf(&sb, "- **%s**: %d\n", r.sev, r.count)
+		total += r.count
+	}
+	if total == 0 {
+		sb.WriteString("No findings — run `hunter scan` first.\n")
+		return sb.String(), nil
+	}
+	fmt.Fprintf(&sb, "- **total**: %d\n\n", total)
+
+	sb.WriteString("### Findings by kind\n\n")
+	for _, r := range kindRows {
+		fmt.Fprintf(&sb, "- `%s`: %d\n", r.kind, r.count)
+	}
+	sb.WriteByte('\n')
+
+	if len(hotspots) > 0 {
+		sb.WriteString("### Top fix hotspots\n\n")
+		for _, f := range hotspots {
+			blastStr := ""
+			if f.BlastRisk > 0 {
+				blastStr = fmt.Sprintf(" (blast_risk=%.1f)", f.BlastRisk)
+			}
+			fmt.Fprintf(&sb, "- [%s] %s%s\n", f.Severity, f.Path, blastStr)
+		}
+		sb.WriteByte('\n')
+	}
+
+	sb.WriteString("Use `hotspot_files`, `silent_errors`, `implicit_couplings`, or `bug_risk_for_change` to drill down.\n")
+	return sb.String(), nil
+}
+
 // ---- helpers ----
 
+// renderFindings groups findings by file path for compact, LLM-friendly output.
 func renderFindings(title string, findings []store.Finding) string {
 	if len(findings) == 0 {
 		return fmt.Sprintf("## %s\n\nNo findings.", title)
 	}
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "## %s (%d findings)\n\n", title, len(findings))
+
+	// Group by path, preserving insertion order.
+	type fileGroup struct {
+		path      string
+		blastRisk float64
+		blastRad  int
+		items     []store.Finding
+	}
+	order := []string{}
+	groups := map[string]*fileGroup{}
 	for _, f := range findings {
-		loc := f.Path
-		if f.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.Path, f.Line)
+		if _, ok := groups[f.Path]; !ok {
+			order = append(order, f.Path)
+			groups[f.Path] = &fileGroup{path: f.Path, blastRisk: f.BlastRisk, blastRad: f.BlastRadius}
 		}
-		blastInfo := ""
-		if f.BlastRisk > 0 {
-			blastInfo = fmt.Sprintf("  blast_radius=%d blast_risk=%.2f\n", f.BlastRadius, f.BlastRisk)
+		g := groups[f.Path]
+		if f.BlastRisk > g.blastRisk {
+			g.blastRisk = f.BlastRisk
+			g.blastRad = f.BlastRadius
 		}
-		fmt.Fprintf(&sb, "[%s] %s  %s\n%s  %s\n\n", f.Severity, f.Kind, loc, blastInfo, f.Message)
+		g.items = append(g.items, f)
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## %s (%d findings across %d files)\n\n", title, len(findings), len(order))
+	for _, path := range order {
+		g := groups[path]
+		blastStr := ""
+		if g.blastRisk > 0 {
+			blastStr = fmt.Sprintf("  blast_radius=%d blast_risk=%.2f", g.blastRad, g.blastRisk)
+		}
+		fmt.Fprintf(&sb, "### %s (%d)%s\n", g.path, len(g.items), blastStr)
+		for _, f := range g.items {
+			loc := ""
+			if f.Line > 0 {
+				loc = fmt.Sprintf(":%d", f.Line)
+			}
+			fmt.Fprintf(&sb, "- [%s] %s%s — %s\n", f.Severity, f.Kind, loc, f.Message)
+		}
+		sb.WriteByte('\n')
 	}
 	return sb.String()
 }
 
 func toolList() []map[string]any {
 	return []map[string]any{
+		{
+			"name":        "code_health_summary",
+			"description": "High-level overview of all bug signals: finding counts by severity and kind, top hotspot files. Call this first to orient in the codebase.",
+			"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+		},
 		{
 			"name":        "hotspot_files",
 			"description": "Top files by fix ratio × blast radius — the most dangerous to touch",

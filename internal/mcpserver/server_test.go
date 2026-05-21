@@ -110,7 +110,7 @@ func TestServer_ToolsList(t *testing.T) {
 	for _, tool := range result.Tools {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"hotspot_files", "silent_errors", "implicit_couplings", "bug_risk_for_change"} {
+	for _, want := range []string{"code_health_summary", "hotspot_files", "silent_errors", "implicit_couplings", "bug_risk_for_change"} {
 		if !names[want] {
 			t.Errorf("tool %q missing from tools/list", want)
 		}
@@ -227,6 +227,43 @@ func TestServer_BugRiskForChange_UnknownFile(t *testing.T) {
 	text := toolText(t, resp)
 	if !strings.Contains(text, "No historical bug signals") {
 		t.Errorf("unknown file should return no signals, got:\n%s", text)
+	}
+}
+
+func TestServer_CodeHealthSummary(t *testing.T) {
+	srv := newTestServer(t)
+	resp := roundtrip(t, srv, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "code_health_summary",
+			"arguments": map[string]any{},
+		},
+	})
+	text := toolText(t, resp)
+	if !strings.Contains(text, "Code Health Summary") {
+		t.Errorf("expected title in summary output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "Findings by severity") {
+		t.Errorf("expected severity breakdown in summary, got:\n%s", text)
+	}
+	if !strings.Contains(text, "fix_hotspot") {
+		t.Errorf("expected fix_hotspot kind in summary, got:\n%s", text)
+	}
+}
+
+func TestServer_RenderGroupedByFile(t *testing.T) {
+	srv := newTestServer(t)
+	resp := roundtrip(t, srv, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{
+			"name":      "silent_errors",
+			"arguments": map[string]any{"limit": 10},
+		},
+	})
+	text := toolText(t, resp)
+	// Grouped output uses ### for file headers.
+	if !strings.Contains(text, "### hot.go") {
+		t.Errorf("expected grouped file header '### hot.go', got:\n%s", text)
 	}
 }
 

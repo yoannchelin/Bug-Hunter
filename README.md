@@ -7,7 +7,7 @@ It is the 4th agent in the [Git Archaeologist](https://github.com/yoannchelin/Gi
 | Signal | What it detects |
 |---|---|
 | **Fix hotspot** | Files where >40% of commits are bugfixes, weighted by blast radius |
-| **Silent error** | Go code patterns where errors are ignored, swallowed, or not propagated |
+| **Silent error** | Error-handling bugs in Go, TypeScript/JS, and Python source |
 | **Bus factor 1** | Files owned by a single inactive author |
 | **Implicit coupling** | File pairs that always change together in fix commits but have no call-graph edge |
 
@@ -27,7 +27,7 @@ Everything runs **locally**, **without an LLM at the core**, and **without paid 
 ```bash
 make build          # produces bin/hunter and bin/hunter-mcp
 make install        # copies binaries to ~/.local/bin
-make test           # runs all 39 unit tests
+make test           # runs all unit tests
 ```
 
 ---
@@ -44,7 +44,7 @@ The scan:
 1. Reads all commits and file-commit associations from the Archaeologist DB
 2. Classifies commits as bugfix or feature using keyword heuristics
 3. Computes fix ratio, bus factor, and co-change pairs per file
-4. Walks the Go source tree and detects silent error patterns (AST analysis)
+4. Walks the source tree and detects silent error patterns (Go AST + TS/Python text analysis)
 5. Writes all findings back into the same DB under `hunter_*` tables
 
 Options:
@@ -52,8 +52,10 @@ Options:
 | Flag | Description |
 |---|---|
 | `--db` | Path to Archaeologist SQLite DB (required) |
-| `--repo` | Path to repo root for AST analysis |
-| `--no-ast` | Skip AST analysis (faster on large repos) |
+| `--repo` | Path to repo root for static analysis |
+| `--no-ast` | Skip Go AST analysis |
+| `--no-ts` | Skip TypeScript/JS analysis |
+| `--no-py` | Skip Python analysis |
 
 ### Show hotspot files
 
@@ -67,16 +69,18 @@ hunter hotspots --db /path/to/.archaeo/index.db --top 20
 hunter findings --db /path/to/.archaeo/index.db
 hunter findings --db ... --severity high
 hunter findings --db ... --kind silent_error
+hunter findings --db ... --kind unsafe_assertion
 hunter findings --db ... --kind fix_hotspot --top 10
+hunter status    --db /path/to/.archaeo/index.db
 ```
 
-Valid `--kind` values: `fix_hotspot`, `silent_error`, `bus_factor_1`, `implicit_coupling`
+Valid `--kind` values: `fix_hotspot`, `silent_error`, `unsafe_assertion`, `bus_factor_1`, `implicit_coupling`
 
 ---
 
 ## MCP server
 
-`hunter-mcp` exposes 4 tools over JSON-RPC 2.0 stdio, compatible with Claude Desktop and any MCP client.
+`hunter-mcp` exposes 5 tools over JSON-RPC 2.0 stdio, compatible with Claude Desktop and any MCP client.
 
 ```bash
 hunter-mcp --db /path/to/.archaeo/index.db
@@ -101,8 +105,9 @@ Add to `claude_desktop_config.json`:
 
 | Tool | Description |
 |---|---|
+| `code_health_summary` | High-level overview: finding counts by severity/kind, top hotspots. **Call this first.** |
 | `hotspot_files` | Top files by fix ratio × blast radius |
-| `silent_errors` | Go files with ignored or swallowed errors |
+| `silent_errors` | Files with swallowed exceptions, ignored errors, floating promises, unsafe assertions |
 | `implicit_couplings` | File pairs that co-change without a call-graph edge |
 | `bug_risk_for_change` | Given files or a unified diff, returns relevant bug history |
 
@@ -133,11 +138,30 @@ It writes findings to `hunter_*` tables in the same DB.
 
 ## Silent error patterns detected
 
+### Go (AST analysis)
+
 | Kind | Pattern |
 |---|---|
 | `ignored_error` | `_ = someCall()` — entire return value discarded |
 | `swallowed_panic` | `recover()` as a bare statement with no result capture |
-| `lost_error` | `if err != nil { return }` bare return, or `return nil, nil` without propagating err |
-| `unguarded_goroutine` | `go func() { ... }()` with multiple calls and no error check, channel send, or log |
+| `lost_error` | `if err != nil { return }` bare return without propagating err |
+| `unguarded_goroutine` | `go func() { ... }()` with multiple calls and no error check or channel send |
 
-Generated files (`// Code generated`) and `_test.go` files are skipped.
+### TypeScript / JavaScript (text analysis)
+
+| Kind | Pattern |
+|---|---|
+| `swallowed_exception` | Empty `catch` block or `.catch(() => {})` handler |
+| `floating_promise` | Unawaited async call in an async function |
+| `swallowed_exception` | `JSON.parse()` without try-catch |
+| `unsafe_assertion` | Non-null assertion `!.` bypassing TypeScript null safety |
+
+### Python (text analysis)
+
+| Kind | Pattern |
+|---|---|
+| `swallowed_exception` | Bare `except:` — catches `KeyboardInterrupt` and `SystemExit` |
+| `swallowed_exception` | `except SomeError: pass` — exception silently discarded |
+| `swallowed_exception` | `subprocess.run/call()` without `check=True` — non-zero exit ignored |
+
+Generated files (`// Code generated`, `__pycache__`) and test files are skipped.
