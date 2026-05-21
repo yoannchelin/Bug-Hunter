@@ -170,6 +170,79 @@ async function handler() {
 	}
 }
 
+// ---- JSON.parse ----
+
+func TestTS_JSONParse_Detected(t *testing.T) {
+	src := `
+function loadConfig(raw: string) {
+  const cfg = JSON.parse(raw);
+  return cfg;
+}
+`
+	errs, err := analyzeTSFile(writeTSFile(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findKind(errs, "swallowed_exception"); len(got) == 0 {
+		t.Error("expected swallowed_exception for bare JSON.parse(), got none")
+	}
+}
+
+func TestTS_JSONParse_NotFlaggedInTryCatch(t *testing.T) {
+	src := `
+function loadConfig(raw: string) {
+  try {
+    const cfg = JSON.parse(raw);
+    return cfg;
+  } catch (e) {
+    console.error('parse failed', e);
+  }
+}
+`
+	errs, err := analyzeTSFile(writeTSFile(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range findKind(errs, "swallowed_exception") {
+		if strings.Contains(e.Message, "JSON.parse") {
+			t.Errorf("JSON.parse inside try-catch should not be flagged; got %v", e)
+		}
+	}
+}
+
+// ---- non-null assertion ----
+
+func TestTS_NonNullAssertion_MemberAccess(t *testing.T) {
+	src := `
+function getUser(id: string) {
+  const user = map.get(id)!.name;
+  return user;
+}
+`
+	errs, err := analyzeTSFile(writeTSFile(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findKind(errs, "unsafe_assertion"); len(got) == 0 {
+		t.Error("expected unsafe_assertion for non-null assertion, got none")
+	}
+}
+
+func TestTS_NonNullAssertion_NotFlaggedInTest(t *testing.T) {
+	src := `
+it('works', () => {
+  expect(result).not.toBeNull();
+});
+`
+	errs, err := analyzeTSFile(writeTSFile(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findKind(errs, "unsafe_assertion"); len(got) > 0 {
+		t.Errorf("expect().not. should not be flagged; got %v", got)
+	}
+}
+
 // ---- AnalyzeTSRepo filters ----
 
 func TestAnalyzeTSRepo_Filters(t *testing.T) {

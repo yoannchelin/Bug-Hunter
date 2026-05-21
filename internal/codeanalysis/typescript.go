@@ -69,6 +69,8 @@ func analyzeTSFile(path string) ([]SilentError, error) {
 	out = append(out, detectEmptyCatch(path, lines)...)
 	out = append(out, detectEmptyPromiseCatch(path, lines)...)
 	out = append(out, detectFloatingPromise(path, lines)...)
+	out = append(out, detectUnsafeJSONParse(path, lines)...)
+	out = append(out, detectNonNullAssertion(path, lines)...)
 	return out, nil
 }
 
@@ -243,6 +245,73 @@ func isFloatingAsyncCall(line string, lineIdx int, lines []string) bool {
 	}
 	// Must contain a function call.
 	return strings.Contains(line, "(") && strings.Contains(line, ")")
+}
+
+// detectUnsafeJSONParse finds JSON.parse() calls that are not inside a try block.
+// These throw SyntaxError on invalid input and are a common source of uncaught exceptions.
+func detectUnsafeJSONParse(path string, lines []string) []SilentError {
+	var out []SilentError
+	inTry := 0 // nesting depth inside try blocks
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Track try block entry/exit (rough brace counting per line).
+		if strings.HasPrefix(trimmed, "try ") || trimmed == "try{" || strings.HasPrefix(trimmed, "try{") {
+			inTry++
+		}
+		// A closing brace followed by "catch" on the same or next line closes the try scope.
+		if inTry > 0 && strings.Contains(trimmed, "} catch") {
+			inTry--
+		}
+		if inTry > 0 {
+			continue
+		}
+		if !strings.Contains(trimmed, "JSON.parse(") {
+			continue
+		}
+		// Skip if already inside a catch parameter (e.g. catch (e) { JSON.parse })
+		// which would be caught by detectEmptyCatch separately.
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		out = append(out, SilentError{
+			Path:    path,
+			Line:    i + 1,
+			Kind:    "swallowed_exception",
+			Message: fmt.Sprintf("JSON.parse() without try-catch at line %d — throws SyntaxError on invalid input", i+1),
+		})
+	}
+	return out
+}
+
+// detectNonNullAssertion finds TypeScript non-null assertion operator `!` on property/method access.
+// These bypass TypeScript's null safety and cause runtime crashes on null/undefined.
+func detectNonNullAssertion(path string, lines []string) []SilentError {
+	var out []SilentError
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Skip comments, imports, type declarations.
+		if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") ||
+			strings.HasPrefix(trimmed, "import ") || strings.HasPrefix(trimmed, "export type ") ||
+			strings.HasPrefix(trimmed, "type ") || strings.HasPrefix(trimmed, "interface ") {
+			continue
+		}
+		// Only flag non-null assertion on member access: `foo!.bar` or `foo!()`.
+		// Avoid false positives on !== comparisons, !=, logical !, regex.
+		if !strings.Contains(trimmed, "!.") && !strings.Contains(trimmed, "!()") && !strings.Contains(trimmed, "![") {
+			continue
+		}
+		// Skip test assertions like expect(x).not. or assert.notEqual
+		if strings.Contains(trimmed, "expect(") || strings.Contains(trimmed, "assert") {
+			continue
+		}
+		out = append(out, SilentError{
+			Path:    path,
+			Line:    i + 1,
+			Kind:    "unsafe_assertion",
+			Message: fmt.Sprintf("non-null assertion (!) at line %d — bypasses null safety, causes runtime crash on null/undefined", i+1),
+		})
+	}
+	return out
 }
 
 // matchesEmptyCatchHandler returns true for `.catch(x => {})` variants with empty body.

@@ -46,11 +46,11 @@ func usage() {
 	fmt.Println(`hunter — Bug Hunter CLI
 
 Commands:
-  scan      --db <path>  [--repo <path>] [--no-ast]   Analyse git history + code
-  hotspots  --db <path>  [--top <n>]                  Top hotspot files
+  scan      --db <path>  [--repo <path>] [--no-ast] [--no-ts]   Analyse git history + code
+  hotspots  --db <path>  [--top <n>]                             Top hotspot files
   findings  --db <path>  [--severity s] [--kind k]
-                         [--path p]     [--top n]      List findings
-  status    --db <path>                                Last scan summary`)
+                         [--path p]     [--top n]                List findings
+  status    --db <path>                                          Last scan summary`)
 }
 
 // ---- scan ----
@@ -59,7 +59,8 @@ func cmdScan(args []string) error {
 	fs := flag.NewFlagSet("scan", flag.ExitOnError)
 	dbPath := fs.String("db", "", "Path to archaeologist SQLite DB (required)")
 	repoPath := fs.String("repo", "", "Path to Git repository root (for AST analysis)")
-	noAST := fs.Bool("no-ast", false, "Skip AST analysis (faster on large repos)")
+	noAST := fs.Bool("no-ast", false, "Skip Go AST analysis (faster on large repos)")
+	noTS := fs.Bool("no-ts", false, "Skip TypeScript/JS analysis")
 	_ = fs.Parse(args)
 
 	if *dbPath == "" {
@@ -112,8 +113,8 @@ func cmdScan(args []string) error {
 		return err
 	}
 
-	// AST analysis if repo path given and not disabled.
-	if *repoPath != "" && !*noAST {
+	// AST / static analysis if repo path given.
+	if *repoPath != "" {
 		repoAbs, _ := filepath.Abs(*repoPath)
 
 		// Load full path→fileID from the DB (covers files with no commits too).
@@ -141,20 +142,24 @@ func cmdScan(args []string) error {
 			return nil
 		}
 
-		fmt.Fprintf(os.Stderr, "[hunter] analysing Go AST in %s…\n", *repoPath)
-		goErrs, err := codeanalysis.AnalyzeRepo(*repoPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[hunter] Go AST warning: %v\n", err)
-		} else if err := insertSilentErrs("Go silent error", goErrs); err != nil {
-			return err
+		if !*noAST {
+			fmt.Fprintf(os.Stderr, "[hunter] analysing Go AST in %s…\n", *repoPath)
+			goErrs, err := codeanalysis.AnalyzeRepo(*repoPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[hunter] Go AST warning: %v\n", err)
+			} else if err := insertSilentErrs("Go silent error", goErrs); err != nil {
+				return err
+			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[hunter] analysing TypeScript/JS in %s…\n", *repoPath)
-		tsErrs, err := codeanalysis.AnalyzeTSRepo(*repoPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[hunter] TS warning: %v\n", err)
-		} else if err := insertSilentErrs("TS silent error", tsErrs); err != nil {
-			return err
+		if !*noTS {
+			fmt.Fprintf(os.Stderr, "[hunter] analysing TypeScript/JS in %s…\n", *repoPath)
+			tsErrs, err := codeanalysis.AnalyzeTSRepo(*repoPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[hunter] TS warning: %v\n", err)
+			} else if err := insertSilentErrs("TS silent error", tsErrs); err != nil {
+				return err
+			}
 		}
 	}
 

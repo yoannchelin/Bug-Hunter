@@ -33,12 +33,19 @@ Identifie les commits de **bugfix** via les mots-clés dans les messages : `fix`
 
 Pour chaque fichier : `fix_ratio = fix_commits / total_commits`. Un ratio > 0.4 est un signal fort.
 
-### Signal 2 — Patterns d'erreurs silencieuses (AST)
-Analyse le code pour détecter :
+### Signal 2 — Patterns d'erreurs silencieuses (AST Go + analyse TS)
+Go (via AST) :
 - `err` assigné mais jamais vérifié (`err := f(); _ = err` ou simplement ignoré)
 - `if err != nil { return }` sans log ni wrapping (l'erreur se perd)
 - `recover()` sans re-panic ni log (panique avalée silencieusement)
 - Goroutines lancées sans gestion d'erreur ni WaitGroup
+
+TypeScript/JavaScript (analyse textuelle, skipe node_modules/dist/.next/test) :
+- Bloc `catch` vide ou contenant seulement un commentaire
+- `.catch(() => {})` — rejet de promesse avalé silencieusement
+- Appel async non-awaité dans une fonction async (floating promise)
+- `JSON.parse()` sans try-catch — lève SyntaxError sur input invalide
+- Opérateur non-null assertion `!.` — bypass de la null safety TypeScript
 
 ### Signal 3 — Auteurs et bus factor
 - Fichiers touchés par un seul auteur (bus factor 1) avec fort churn
@@ -161,9 +168,10 @@ Tout est implémenté et testé sur les deux DB d'Archaeologist disponibles.
 internal/store/       store.go + queries.go  — DB layer complet
 internal/gitanalysis/ classify.go + analyze.go  — classification + stats + co-change
 internal/findings/    findings.go  — fix_hotspot, bus_factor_1, implicit_coupling
-internal/codeanalysis/ast.go  — ignored_error, swallowed_panic, unguarded_goroutine, lost_error
+internal/codeanalysis/ast.go         — ignored_error, swallowed_panic, unguarded_goroutine, lost_error
+internal/codeanalysis/typescript.go  — swallowed_exception (catch/promise), floating_promise, unsafe_assertion
 internal/mcpserver/   server.go  — 4 outils MCP (JSON-RPC 2.0 stdio)
-cmd/hunter/           main.go  — CLI : scan / hotspots / findings
+cmd/hunter/           main.go  — CLI : scan / hotspots / findings / status
 cmd/hunter-mcp/       main.go  — binaire MCP
 ```
 
@@ -173,9 +181,11 @@ cmd/hunter-mcp/       main.go  — binaire MCP
 
 ```bash
 hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo
-hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-ast   # skip AST, rapide
+hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-ast   # skip Go AST
+hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-ts    # skip TS/JS
 hunter hotspots --db /path/to/.archaeo/index.db --top 20
 hunter findings --db /path/to/.archaeo/index.db --severity high
+hunter findings --db /path/to/.archaeo/index.db --kind unsafe_assertion
 
 hunter-mcp --db /path/to/.archaeo/index.db
 ```
