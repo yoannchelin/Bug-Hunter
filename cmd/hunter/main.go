@@ -34,6 +34,8 @@ func run() error {
 		return cmdHotspots(os.Args[2:])
 	case "findings":
 		return cmdFindings(os.Args[2:])
+	case "status":
+		return cmdStatus(os.Args[2:])
 	default:
 		usage()
 		return nil
@@ -44,9 +46,11 @@ func usage() {
 	fmt.Println(`hunter — Bug Hunter CLI
 
 Commands:
-  scan      --db <path>  [--repo <path>]   Analyse git history + code, write findings
-  hotspots  --db <path>  [--top <n>]       Print top hotspot files
-  findings  --db <path>  [--severity <s>]  Print findings (high|medium|low)`)
+  scan      --db <path>  [--repo <path>] [--no-ast]   Analyse git history + code
+  hotspots  --db <path>  [--top <n>]                  Top hotspot files
+  findings  --db <path>  [--severity s] [--kind k]
+                         [--path p]     [--top n]      List findings
+  status    --db <path>                                Last scan summary`)
 }
 
 // ---- scan ----
@@ -222,6 +226,7 @@ func cmdFindings(args []string) error {
 	dbPath := fs.String("db", "", "Path to SQLite DB (required)")
 	sev := fs.String("severity", "", "Filter by severity: high|medium|low")
 	kind := fs.String("kind", "", "Filter by kind: fix_hotspot|silent_error|bus_factor_1|implicit_coupling")
+	path := fs.String("path", "", "Filter by file path prefix (e.g. internal/store)")
 	top := fs.Int("top", 0, "Limit number of results (0 = all)")
 	_ = fs.Parse(args)
 
@@ -239,14 +244,19 @@ func cmdFindings(args []string) error {
 	if *top > 0 {
 		limitN = *top
 	}
+	pathFilter := ""
+	if *path != "" {
+		pathFilter = *path + "%"
+	}
 	rows, err := s.DB().Query(`
 SELECT kind,severity,path,line,message,blast_risk FROM hunter_findings
 WHERE (? = '' OR severity = ?)
   AND (? = '' OR kind = ?)
+  AND (? = '' OR path LIKE ?)
 ORDER BY
   CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
   blast_risk DESC
-LIMIT ?`, *sev, *sev, *kind, *kind, limitN)
+LIMIT ?`, *sev, *sev, *kind, *kind, pathFilter, pathFilter, limitN)
 	if err != nil {
 		return err
 	}
@@ -270,5 +280,65 @@ LIMIT ?`, *sev, *sev, *kind, *kind, limitN)
 	if count == 0 {
 		fmt.Println("No findings.")
 	}
+	return rows.Err()
+}
+
+// ---- status ----
+
+func cmdStatus(args []string) error {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	dbPath := fs.String("db", "", "Path to SQLite DB (required)")
+	_ = fs.Parse(args)
+
+	if *dbPath == "" {
+		return fmt.Errorf("--db is required")
+	}
+
+	s, err := store.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
+
+	lastScan, _ := s.GetMeta("last_scan")
+	if lastScan == "" {
+		fmt.Println("No scan has been run yet. Use: hunter scan --db <path>")
+		return nil
+	}
+
+	fmt.Printf("Last scan : %s\n\n", lastScan)
+
+	// Findings by severity × kind.
+	rows, err := s.DB().Query(`
+SELECT severity, kind, COUNT(*) FROM hunter_findings
+GROUP BY severity, kind
+ORDER BY
+  CASE severity WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+  kind`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	fmt.Printf("%-8s  %-22s  %s\n", "SEVERITY", "KIND", "COUNT")
+	fmt.Println(strings.Repeat("-", 42))
+	total := 0
+	for rows.Next() {
+		var sev, kind string
+		var count int
+		if err := rows.Scan(&sev, &kind, &count); err != nil {
+			return err
+		}
+		fmt.Printf("%-8s  %-22s  %d\n", sev, kind, count)
+		total += count
+	}
+	fmt.Println(strings.Repeat("-", 42))
+	fmt.Printf("%-8s  %-22s  %d\n", "", "total", total)
+
+	// Files analysed.
+	var files int
+	s.DB().QueryRow(`SELECT COUNT(*) FROM hunter_file_stats`).Scan(&files)
+	fmt.Printf("\nFiles in stats : %d\n", files)
+
 	return rows.Err()
 }
