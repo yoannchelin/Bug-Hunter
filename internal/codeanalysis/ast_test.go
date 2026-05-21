@@ -333,3 +333,53 @@ func TestAnalyzeRepo_Filters(t *testing.T) {
 		t.Error("expected at least 1 finding in real.go")
 	}
 }
+
+// ---- ToFindings kind/severity mapping ----
+
+func TestToFindings_KindAndSeverity(t *testing.T) {
+	pathToID := map[string]int64{"a.ts": 1}
+
+	cases := []struct {
+		kind       string
+		wantDBKind string
+		wantSev    string
+	}{
+		{"swallowed_exception", "silent_error", "high"},
+		{"swallowed_panic", "silent_error", "high"},
+		{"ignored_error", "silent_error", "medium"},
+		{"lost_error", "silent_error", "medium"},
+		{"unguarded_goroutine", "silent_error", "medium"},
+		{"floating_promise", "silent_error", "low"},
+		{"unsafe_assertion", "unsafe_assertion", "low"},
+	}
+
+	for _, tc := range cases {
+		errs := []SilentError{{Path: "a.ts", Line: 1, Kind: tc.kind, Message: "test"}}
+		fds := ToFindings(errs, pathToID, nil)
+		if len(fds) != 1 {
+			t.Errorf("kind %s: got %d findings, want 1", tc.kind, len(fds))
+			continue
+		}
+		if fds[0].Kind != tc.wantDBKind {
+			t.Errorf("kind %s: DB kind = %q, want %q", tc.kind, fds[0].Kind, tc.wantDBKind)
+		}
+		if fds[0].Severity != tc.wantSev {
+			t.Errorf("kind %s: severity = %q, want %q", tc.kind, fds[0].Severity, tc.wantSev)
+		}
+	}
+}
+
+func TestToFindings_BlastPromotesSeverity(t *testing.T) {
+	if kindToSeverity("floating_promise") != "low" {
+		t.Error("floating_promise base severity should be low")
+	}
+	if promoteSeverity("low") != "medium" {
+		t.Error("promoteSeverity(low) should be medium")
+	}
+	if promoteSeverity("medium") != "high" {
+		t.Error("promoteSeverity(medium) should be high")
+	}
+	if promoteSeverity("high") != "high" {
+		t.Error("promoteSeverity(high) should stay high")
+	}
+}

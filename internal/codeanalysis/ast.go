@@ -13,11 +13,13 @@ import (
 	"github.com/leazelaya/bug-hunter/internal/store"
 )
 
-// SilentError is a detected error-handling issue in Go source.
+// SilentError is a detected error-handling or safety issue in source code.
 type SilentError struct {
 	Path    string
 	Line    int
-	Kind    string // "ignored_error", "swallowed_panic", "unguarded_goroutine", "lost_error"
+	// Go: "ignored_error", "swallowed_panic", "unguarded_goroutine", "lost_error"
+	// TS:  "swallowed_exception", "floating_promise", "unsafe_assertion"
+	Kind    string
 	Message string
 }
 
@@ -311,16 +313,42 @@ func isBinaryErrCheck(expr ast.Expr) bool {
 }
 
 // ToFindings converts SilentErrors to store.Finding rows given a path→fileID map.
+// kindToDBKind maps a SilentError.Kind to the hunter_findings kind column value.
+func kindToDBKind(k string) string {
+	switch k {
+	case "unsafe_assertion":
+		return "unsafe_assertion"
+	default:
+		return "silent_error"
+	}
+}
+
+// kindToSeverity maps a SilentError.Kind to a base severity before blast weighting.
+func kindToSeverity(k string) string {
+	switch k {
+	case "swallowed_panic", "swallowed_exception":
+		return "high"
+	case "unsafe_assertion", "floating_promise":
+		return "low"
+	default: // ignored_error, lost_error, unguarded_goroutine
+		return "medium"
+	}
+}
+
 func ToFindings(errs []SilentError, pathToID map[string]int64, blast map[int64]store.BlastMetric) []store.Finding {
 	var out []store.Finding
 	for _, e := range errs {
-		// Normalize path to relative if possible.
 		fileID := pathToID[e.Path]
 		bm := blast[fileID]
+		// Promote severity by one level when blast risk is significant.
+		sev := kindToSeverity(e.Kind)
+		if bm.RiskScore >= 1.5 {
+			sev = promoteSeverity(sev)
+		}
 		out = append(out, store.Finding{
 			FileID:      fileID,
-			Kind:        "silent_error",
-			Severity:    "medium",
+			Kind:        kindToDBKind(e.Kind),
+			Severity:    sev,
 			Message:     e.Message,
 			Path:        e.Path,
 			Line:        e.Line,
@@ -329,4 +357,15 @@ func ToFindings(errs []SilentError, pathToID map[string]int64, blast map[int64]s
 		})
 	}
 	return out
+}
+
+func promoteSeverity(s string) string {
+	switch s {
+	case "low":
+		return "medium"
+	case "medium":
+		return "high"
+	default:
+		return s
+	}
 }

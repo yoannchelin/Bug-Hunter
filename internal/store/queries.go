@@ -189,12 +189,12 @@ LIMIT ?`, minFixRatio, limit)
 	return scanFindings(rows)
 }
 
-// QuerySilentErrors returns silent_error findings, optionally filtered by path prefix.
+// QuerySilentErrors returns silent_error and unsafe_assertion findings, optionally filtered by path prefix.
 func (s *Store) QuerySilentErrors(pathPrefix string, limit int) ([]Finding, error) {
 	query := `
 SELECT id,file_id,symbol_id,kind,severity,message,path,line,blast_radius,blast_risk
 FROM hunter_findings
-WHERE kind='silent_error'`
+WHERE kind IN ('silent_error','unsafe_assertion')`
 	args := []any{}
 	if pathPrefix != "" {
 		query += ` AND path LIKE ?`

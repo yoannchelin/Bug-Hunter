@@ -310,6 +310,10 @@ func detectNonNullAssertion(path string, lines []string) []SilentError {
 			Kind:    "unsafe_assertion",
 			Message: fmt.Sprintf("non-null assertion (!) at line %d — bypasses null safety, causes runtime crash on null/undefined", i+1),
 		})
+		// Cap per file to avoid flooding findings on assertion-heavy files.
+		if len(out) >= 5 {
+			break
+		}
 	}
 	return out
 }
