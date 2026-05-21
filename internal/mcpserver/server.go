@@ -227,7 +227,7 @@ func toolList() []map[string]any {
 		},
 		{
 			"name":        "silent_errors",
-			"description": "Go files with ignored or swallowed errors/panics",
+			"description": "Files with swallowed exceptions, ignored errors, floating promises, or unsafe type assertions (Go, TypeScript, Python)",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

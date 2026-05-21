@@ -46,7 +46,7 @@ func usage() {
 	fmt.Println(`hunter — Bug Hunter CLI
 
 Commands:
-  scan      --db <path>  [--repo <path>] [--no-ast] [--no-ts]   Analyse git history + code
+  scan      --db <path>  [--repo <path>] [--no-ast] [--no-ts] [--no-py]   Analyse git history + code
   hotspots  --db <path>  [--top <n>]                             Top hotspot files
   findings  --db <path>  [--severity s] [--kind k]
                          [--path p]     [--top n]                List findings
@@ -61,6 +61,7 @@ func cmdScan(args []string) error {
 	repoPath := fs.String("repo", "", "Path to Git repository root (for AST analysis)")
 	noAST := fs.Bool("no-ast", false, "Skip Go AST analysis (faster on large repos)")
 	noTS := fs.Bool("no-ts", false, "Skip TypeScript/JS analysis")
+	noPy := fs.Bool("no-py", false, "Skip Python analysis")
 	_ = fs.Parse(args)
 
 	if *dbPath == "" {
@@ -158,6 +159,16 @@ func cmdScan(args []string) error {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[hunter] TS warning: %v\n", err)
 			} else if err := insertSilentErrs("TS silent error", tsErrs); err != nil {
+				return err
+			}
+		}
+
+		if !*noPy {
+			fmt.Fprintf(os.Stderr, "[hunter] analysing Python in %s…\n", *repoPath)
+			pyErrs, err := codeanalysis.AnalyzePyRepo(*repoPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[hunter] Python warning: %v\n", err)
+			} else if err := insertSilentErrs("Python silent error", pyErrs); err != nil {
 				return err
 			}
 		}

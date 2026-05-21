@@ -47,6 +47,11 @@ TypeScript/JavaScript (analyse textuelle, skipe node_modules/dist/.next/test) :
 - `JSON.parse()` sans try-catch — lève SyntaxError sur input invalide
 - Opérateur non-null assertion `!.` — bypass de la null safety TypeScript
 
+Python (analyse textuelle, skipe __pycache__/.venv/test_*.py) :
+- `except:` nu — attrape KeyboardInterrupt et SystemExit, presque toujours un bug
+- `except Exception: pass` — exception avalée silencieusement
+- `subprocess.run/call()` sans `check=True` ni try — code de sortie non-zéro ignoré
+
 ### Signal 3 — Auteurs et bus factor
 - Fichiers touchés par un seul auteur (bus factor 1) avec fort churn
 - Fichiers dont le seul auteur a arrêté de committer (départ probable)
@@ -170,6 +175,7 @@ internal/gitanalysis/ classify.go + analyze.go  — classification + stats + co-
 internal/findings/    findings.go  — fix_hotspot, bus_factor_1, implicit_coupling
 internal/codeanalysis/ast.go         — ignored_error, swallowed_panic, unguarded_goroutine, lost_error
 internal/codeanalysis/typescript.go  — swallowed_exception (catch/promise), floating_promise, unsafe_assertion
+internal/codeanalysis/python.go      — swallowed_exception (bare except, empty except, subprocess)
 internal/mcpserver/   server.go  — 4 outils MCP (JSON-RPC 2.0 stdio)
 cmd/hunter/           main.go  — CLI : scan / hotspots / findings / status
 cmd/hunter-mcp/       main.go  — binaire MCP
@@ -183,6 +189,7 @@ cmd/hunter-mcp/       main.go  — binaire MCP
 hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo
 hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-ast   # skip Go AST
 hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-ts    # skip TS/JS
+hunter scan --db /path/to/.archaeo/index.db --repo /path/to/repo --no-py    # skip Python
 hunter hotspots --db /path/to/.archaeo/index.db --top 20
 hunter findings --db /path/to/.archaeo/index.db --severity high
 hunter findings --db /path/to/.archaeo/index.db --kind unsafe_assertion
