@@ -107,9 +107,13 @@ func RunCoChangeFindings(s *store.Store, pairs []gitanalysis.CoChangePair, fileP
 		if !hasEdge {
 			pathA := filePaths[p.FileA]
 			pathB := filePaths[p.FileB]
+			qualifier := ""
+			if p.IsFixCoChange {
+				qualifier = " (including fix commits)"
+			}
 			msg := fmt.Sprintf(
-				"co-changed %d times in fix commits but no call-graph edge between %s and %s",
-				p.CoCommits, pathA, pathB,
+				"co-changed %d times%s but no call-graph edge between %s and %s",
+				p.CoCommits, qualifier, pathA, pathB,
 			)
 			if _, err := s.InsertFinding(store.Finding{
 				FileID:   p.FileA,

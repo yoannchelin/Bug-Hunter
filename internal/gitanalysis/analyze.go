@@ -19,15 +19,18 @@ type FileResult struct {
 	BusFactor     int // 1 when a single author owns the majority
 }
 
-// CoChangePair counts how many fix-commits two files were modified together.
+// CoChangePair counts how many commits two files were modified together.
 type CoChangePair struct {
-	FileA     int64
-	FileB     int64
-	CoCommits int
+	FileA        int64
+	FileB        int64
+	CoCommits    int
+	IsFixCoChange bool // true if the pair co-changed in at least one fix commit
 }
 
 const (
-	minCoChangeCount = 3 // ignore pairs that co-change fewer than this many times
+	minCoChangeCount      = 3 // default minimum; lowered for small commit windows
+	smallWindowCommits    = 200
+	smallWindowThreshold  = 2
 )
 
 // Analyze processes all file-commit rows and returns per-file stats plus co-change pairs.
@@ -126,26 +129,46 @@ func Analyze(fcs []store.FileCommit) ([]FileResult, []CoChangePair) {
 		})
 	}
 
-	// Co-change: count pairs within fix commits.
+	// Co-change: count pairs across ALL commits (not just fix commits).
+	// This gives a much richer signal in repos with small commit windows.
+	// We also track whether the pair co-changed in at least one fix commit.
+	totalCommits := len(commitFiles)
+	threshold := minCoChangeCount
+	if totalCommits < smallWindowCommits {
+		threshold = smallWindowThreshold
+	}
+
 	coMap := make(map[[2]int64]int)
-	for _, ids := range fixCommitFiles {
+	fixCoMap := make(map[[2]int64]bool)
+
+	for hash, ids := range commitFiles {
 		if len(ids) < 2 {
 			continue
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		isFix := commitIsFix[hash]
 		for i := 0; i < len(ids); i++ {
 			for j := i + 1; j < len(ids); j++ {
-				coMap[[2]int64{ids[i], ids[j]}]++
+				key := [2]int64{ids[i], ids[j]}
+				coMap[key]++
+				if isFix {
+					fixCoMap[key] = true
+				}
 			}
 		}
 	}
 
 	pairs := make([]CoChangePair, 0, len(coMap))
 	for k, cnt := range coMap {
-		if cnt < minCoChangeCount {
+		if cnt < threshold {
 			continue
 		}
-		pairs = append(pairs, CoChangePair{FileA: k[0], FileB: k[1], CoCommits: cnt})
+		pairs = append(pairs, CoChangePair{
+			FileA:         k[0],
+			FileB:         k[1],
+			CoCommits:     cnt,
+			IsFixCoChange: fixCoMap[k],
+		})
 	}
 
 	return results, pairs

@@ -63,8 +63,9 @@ func TestAnalyze_MergeCommitsSkipped(t *testing.T) {
 
 func TestAnalyze_CoChange(t *testing.T) {
 	now := time.Now().Unix()
-	// Files 1 and 2 co-change in 3 fix commits → should produce a pair.
-	// Files 1 and 3 co-change in 2 fix commits → below threshold, no pair.
+	// Small commit window (5 commits < smallWindowCommits=200) → threshold drops to 2.
+	// Files 1+2 co-change 3 times (all fix commits) → pair found, IsFixCoChange=true.
+	// Files 1+3 co-change 2 times (fix commits) → pair found at lowered threshold.
 	fcs := []store.FileCommit{
 		{CommitHash: "f1", FileID: 1, FilePath: "a.go", AuthorName: "alice", AuthorTS: now, Message: "fix: a"},
 		{CommitHash: "f1", FileID: 2, FilePath: "b.go", AuthorName: "alice", AuthorTS: now, Message: "fix: a"},
@@ -80,7 +81,7 @@ func TestAnalyze_CoChange(t *testing.T) {
 
 	_, pairs := Analyze(fcs)
 
-	found12 := false
+	found12, found13 := false, false
 	for _, p := range pairs {
 		a, b := p.FileA, p.FileB
 		if (a == 1 && b == 2) || (a == 2 && b == 1) {
@@ -88,13 +89,47 @@ func TestAnalyze_CoChange(t *testing.T) {
 			if p.CoCommits != 3 {
 				t.Errorf("pair (1,2): CoCommits = %d, want 3", p.CoCommits)
 			}
+			if !p.IsFixCoChange {
+				t.Error("pair (1,2): all co-changes are fix commits, IsFixCoChange should be true")
+			}
 		}
 		if (a == 1 && b == 3) || (a == 3 && b == 1) {
-			t.Errorf("pair (1,3) with 2 co-changes should be below threshold and absent")
+			found13 = true // allowed with small-window threshold=2
 		}
 	}
 	if !found12 {
 		t.Errorf("expected co-change pair (1,2) with 3 co-commits, not found in %v", pairs)
+	}
+	if !found13 {
+		t.Errorf("expected pair (1,3) with 2 co-commits: small window threshold=2 should include it")
+	}
+}
+
+func TestAnalyze_CoChange_AllCommits(t *testing.T) {
+	now := time.Now().Unix()
+	// Non-fix co-changes should now be counted (unlike before).
+	// Files 1+2 co-change twice in non-fix commits; small window → threshold=2 → pair found.
+	fcs := []store.FileCommit{
+		{CommitHash: "c1", FileID: 1, FilePath: "a.go", AuthorName: "alice", AuthorTS: now, Message: "feat: add X"},
+		{CommitHash: "c1", FileID: 2, FilePath: "b.go", AuthorName: "alice", AuthorTS: now, Message: "feat: add X"},
+		{CommitHash: "c2", FileID: 1, FilePath: "a.go", AuthorName: "alice", AuthorTS: now, Message: "refactor Y"},
+		{CommitHash: "c2", FileID: 2, FilePath: "b.go", AuthorName: "alice", AuthorTS: now, Message: "refactor Y"},
+	}
+
+	_, pairs := Analyze(fcs)
+
+	found := false
+	for _, p := range pairs {
+		a, b := p.FileA, p.FileB
+		if (a == 1 && b == 2) || (a == 2 && b == 1) {
+			found = true
+			if p.IsFixCoChange {
+				t.Error("non-fix co-changes should set IsFixCoChange=false")
+			}
+		}
+	}
+	if !found {
+		t.Error("non-fix co-changes should now produce pairs (all-commits counting)")
 	}
 }
 
